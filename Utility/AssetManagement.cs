@@ -445,6 +445,7 @@ namespace DLTD.Utility.AssetManagement
             {
                 var newAsset = Activator.CreateInstance(constructors[AssetType], args) as Asset;
                 newAsset.Type = AssetType;
+                return newAsset;
             }
 
             throw new Exception("[DLTD AssetFactory] Attempted to construct unknown asset type " + AssetType.ToString());
