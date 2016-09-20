@@ -78,6 +78,15 @@ namespace DLTD.Utility.AssetManagement
         public const int defaultTTL = 30;
     }
     #endregion
+    #region Static utilities
+    internal static class Generics
+    {
+        public static int secondsToFixedFrames( int secs )
+        {
+            return secs * 50;
+        }
+    }
+    #endregion
 
     #region Paths
     #region PathContainer
@@ -459,7 +468,7 @@ namespace DLTD.Utility.AssetManagement
 
         public static bool isAttributeName ( string name )
         {
-            return ((name.Length > NameMatch.Length) && name.Substring(name.Length - NameMatch.Length) == NameMatch);
+            return ((name.Length > NameMatch.Length) && name.Substring(name.Length - NameMatch.Length).Equals( NameMatch, StringComparison.Ordinal ));
         }
 
         private DictionaryValueList<string, ConfigNode> Attributes;
@@ -509,7 +518,6 @@ namespace DLTD.Utility.AssetManagement
         {
             return new NameContainer(KSPPaths.BuildPath(Location, path));
         }
-
 
         public DictionaryValueList<PathContainer, Asset> Assets;
         private MonoBehaviour processor;
@@ -597,6 +605,7 @@ namespace DLTD.Utility.AssetManagement
     #region AssetBundleSource
     public class AssetBundleSource : AssetSource, IUnloadable
     {
+        
         #region IUnloadable
         private int _defaultTTL = Constant.defaultTTL;
         public int defaultTTL {  get { return _defaultTTL; } }
@@ -607,10 +616,22 @@ namespace DLTD.Utility.AssetManagement
             set { _TTL = value; }
         }
 
+        public IUnloader Unloader
+        {
+            get { return AssetManagement.instance; }
+        }
+
+        private bool unloadAll = false;
+
         public void Unload()
         {
             if (bundle != null)
-                bundle.Unload(false);
+                bundle.Unload(unloadAll);
+        }
+
+        public void ResetTTL()
+        {
+            _TTL = _defaultTTL;
         }
         #endregion
 
@@ -618,6 +639,8 @@ namespace DLTD.Utility.AssetManagement
 
         public AssetBundleSource(PathContainer path) : base(path)
         {
+            _defaultTTL = Generics.secondsToFixedFrames( 120 );
+            _TTL = _defaultTTL;
         }
 
         // don't forget to set states
@@ -633,6 +656,7 @@ namespace DLTD.Utility.AssetManagement
                 }
 
                 bundle = unityWWWStream.assetBundle;
+                Unloader.queueForUnload(this);
             }
         }
 
@@ -795,11 +819,19 @@ namespace DLTD.Utility.AssetManagement
     {
         int TTL { get; set; }
         int defaultTTL { get; }
+        IUnloader Unloader { get; }
+
+        void ResetTTL();
         void Unload();
     }
 
+    public interface IUnloader
+    {
+        void queueForUnload(IUnloadable item);
+    }
+
     [KSPAddon(KSPAddon.Startup.Instantly, true)]
-    public class AssetManagement : MonoBehaviour
+    public class AssetManagement : MonoBehaviour, IUnloader
     {
         public static AssetManagement instance;
 
@@ -812,7 +844,7 @@ namespace DLTD.Utility.AssetManagement
             for(int i = 0; i < unloadQueue.Count; i++ )
                 if( unloadQueue[i].TTL <= 0 )
                 {
-                    unloadQueue[i].TTL = ( unloadQueue[i].defaultTTL > 0 ) ? unloadQueue[i].defaultTTL : Constant.defaultTTL;
+                    unloadQueue[i].ResetTTL();
                     unloadQueue[i].Unload();
                     unloadQueue.RemoveAt(i);
                     if (unloadQueue.Count == 0)
@@ -839,6 +871,7 @@ namespace DLTD.Utility.AssetManagement
             instance = this;
             DontDestroyOnLoad(this);
 
+            unloadQueue = new List<IUnloadable>();
             Factory = new AssetFactory();
         }
 
