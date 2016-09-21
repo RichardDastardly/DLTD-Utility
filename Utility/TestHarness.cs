@@ -16,7 +16,8 @@ namespace DLTD.Utility.TestHarness
 
         public void Awake()
         {
-            pathTest = new AssetManagement.KSPPaths(modName: "TestMod");
+            pathTest = new AssetManagement.KSPPaths();
+            pathTest.Manufacturer = null;
             var pathKeys = pathTest.pathKeys;
 
             for( int i = 0; i < pathKeys.Count; i++ )

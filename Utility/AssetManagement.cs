@@ -153,7 +153,7 @@ namespace DLTD.Utility.AssetManagement
         }
 
 
-        private Dictionary<string, PathContainer> commonPaths;
+        protected Dictionary<string, PathContainer> commonPaths;
         public PathContainer this[string index]
         {
             get {
@@ -239,7 +239,7 @@ namespace DLTD.Utility.AssetManagement
             }
         }
 
-        private void buildCommonPaths()
+        protected virtual void buildCommonPaths()
         {
             commonPaths.Clear();
 
@@ -312,6 +312,33 @@ namespace DLTD.Utility.AssetManagement
         public PathContainer GetContainerForPath( string pathKey, params string[] path )
         {
             return new PathContainer(BuildPath(commonPaths[pathKey], BuildPath( path )));
+        }
+    }
+
+    /// <summary>
+    /// ValidatedKSPPaths checks each built path exists & removes nonexistant ones
+    /// </summary>
+    public class ValidatedKSPPaths : KSPPaths
+    {
+        private void ValidatePathKeys()
+        {
+            var keys = pathKeys; // pathKeys is a property which builds a new list, so cache the value...
+            for(int i = 0; i < keys.Count; i++)
+            {
+                var prospectivePath = commonPaths[keys[i]];
+                if (!Directory.Exists(prospectivePath.Absolute()))
+                {
+                    commonPaths[keys[i]] = null;
+                }
+            }
+        }
+
+        public ValidatedKSPPaths(string modName = null, string mfg = null, string pdl = null) : base( modName, mfg, pdl ) {}
+
+        protected override void buildCommonPaths()
+        {
+            base.buildCommonPaths();
+            ValidatePathKeys();
         }
     }
     #endregion
@@ -508,12 +535,31 @@ namespace DLTD.Utility.AssetManagement
     #endregion
 
     #region AssetSource
+    public sealed class ValidExtensions : Attribute
+    {
+        string[] extensions;
+        string description;
+
+        public ValidExtensions(params string[] Extensions)
+        {
+            extensions = Extensions;
+        }
+    }
+
+    public interface IAssetSourceDispatcher
+    {
+        void RegisterHandler(AssetSource handler, string[] extensions);
+        AssetSource DispatchAssetSource(string extension);
+    }
 
     // May want two enums
     public enum AssetSourceState { Unloaded, Unscanned, Scanning, Scanned, LoadingAsset, Loaded }
     public enum AssetAsyncState { Unloaded, Loading, Loaded, FailedToLoad }
     public abstract class AssetSource
     {
+        protected abstract ClassStructure Structure { get; set; }
+        protected IAssetSourceDispatcher Dispatcher;
+
         protected PathContainer Location;
         public NameContainer Locate(string path)
         {
@@ -540,6 +586,11 @@ namespace DLTD.Utility.AssetManagement
         {
             Location = path;
             State = new StateWithEvent<AssetSourceState>();
+
+            if (Structure == null)
+                Structure = new ClassStructure(this);
+
+            Dispatcher = AssetManagement.instance;
 
             if( AssetManagement.instance != null )
             {
@@ -604,9 +655,15 @@ namespace DLTD.Utility.AssetManagement
     #endregion
 
     #region AssetBundleSource
+    [ValidExtensions("abl","assetbundle")]
     public class AssetBundleSource : AssetSource, IUnloadable
     {
-        
+        private static ClassStructure structure;
+        protected override ClassStructure Structure {
+            get { return structure; }
+            set { structure = value; }
+        }
+
         #region IUnloadable
         private int _defaultTTL = Constant.defaultTTL;
         public int defaultTTL {  get { return _defaultTTL; } }
@@ -779,7 +836,17 @@ namespace DLTD.Utility.AssetManagement
 
         public override Asset[] GetAssetsOfType<T>(string pathFilter)
         {
-            throw new NotImplementedException();
+            Asset[] locatedAssets = new T[Assets.Count];
+            int locatedCount = 0;
+
+            for (int i = 0; i < Assets.Count; i++)
+            {
+                var curAsset = Assets.At(i);
+                if ((curAsset.GetType() == typeof(T)) && pathFilter.Equals(curAsset.Path.Substring(0, pathFilter.Length ), StringComparison.OrdinalIgnoreCase))
+                    locatedAssets[locatedCount++] = curAsset;
+            }
+
+            return locatedAssets;
         }
 
         /// <summary>
@@ -832,9 +899,11 @@ namespace DLTD.Utility.AssetManagement
     }
 
     [KSPAddon(KSPAddon.Startup.Instantly, true)]
-    public class AssetManagement : MonoBehaviour, IUnloader
+    public class AssetManagement : MonoBehaviour, IUnloader, IAssetSourceDispatcher
     {
+        private ValidatedKSPPaths paths;
         public static AssetManagement instance;
+        private Dictionary<string, AssetSource> loaders;
 
         public static AssetFactory Factory;
 
@@ -874,11 +943,32 @@ namespace DLTD.Utility.AssetManagement
 
             unloadQueue = new List<IUnloadable>();
             Factory = new AssetFactory();
+            paths = new ValidatedKSPPaths();
+            loaders = new Dictionary<string, AssetSource>();
+
         }
 
         public void FixedUpdate()
         {
             processUnloadQueue();
+        }
+
+        public void RegisterHandler(AssetSource handler, string[] extensions)
+        {
+            for (int i = 0; i < extensions.Length; i++)
+            {
+                if (extensions[i] == null)
+                    break;
+                loaders[extensions[i].ToLower()] = handler;
+            }
+        }
+
+        public AssetSource DispatchAssetSource(string extension)
+        {
+            AssetSource _loader;
+            if (loaders.TryGetValue(extension.ToLower(), out _loader))
+                return _loader;
+            return null;
         }
 
         #endregion
