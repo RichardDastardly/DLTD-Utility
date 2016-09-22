@@ -89,34 +89,64 @@ namespace DLTD.Utility.AssetManagement
     }
     #endregion
 
+    #region Factory
+    public class Factory<I,T> where T : class
+    {
+        /// <summary>
+        /// Indexed by unity object type. Directory AssetSource should match file type to unity type.
+        /// </summary>
+        private Dictionary<I, Type> constructors;
+
+        public Factory()
+        {
+            constructors = new Dictionary<I, Type>();
+        }
+
+        public T Generate(I index, params object[] args)
+        {
+            if (constructors.ContainsKey(index))
+            {
+                var newAsset = Activator.CreateInstance(constructors[index], args) as T;
+                return newAsset;
+            }
+
+            return Activator.CreateInstance(typeof(T), args) as T;
+
+            //throw new Exception("[DLTD Factory] Attempted to construct unknown asset type " + AssetType.ToString());
+        }
+
+        public void Register(I index, Type instanceType)
+        {
+            constructors[index] = instanceType;
+        }
+    }
+    #endregion
+
     #region Paths
     #region PathContainer
+    /// <summary>
+    /// Use PathContainer to store directory paths and file paths where you won't want to operate with the plain filename
+    /// </summary>
     public class PathContainer
     {
-        public string pathComponent;
-        protected string _name;
+        protected string pathcomponent;
+        public string pathComponent
+        {
+            get { return pathcomponent; }
+        }
+
+        public virtual string path
+        {
+            get { return pathcomponent; }
+        }
 
         public PathContainer(string path) {
-            pathComponent = Regex.Replace( path, @"[\\/]+", KSPPaths.pathSeparator.ToString() );
-        }
-
-        public PathContainer( string name, string path ) : this ( path )
-        {
-            _name = name;
-        }
-
-        public string name
-        {
-            get { return (_name != null ) ? _name : Path.GetFileName(pathComponent); }
-        }
-        public string Extension
-        {
-            get { return Path.GetExtension(pathComponent).Substring(1); }
+            pathcomponent = Regex.Replace( path, @"[\\/]+", KSPPaths.pathSeparator.ToString() );
         }
 
         public static implicit operator string(PathContainer c)
         {
-            return c.pathComponent;
+            return c.path;
         }
 
         public string Absolute()
@@ -124,30 +154,58 @@ namespace DLTD.Utility.AssetManagement
             return Absolute(this);
         }
 
-        public static string Absolute( PathContainer path )
+        public static string Absolute( PathContainer _path )
         {
-            return KSPPaths.FullPath(path.pathComponent);
+            return KSPPaths.FullPath(_path);
         }
 
-        public static string Absolute( string path )
+        public static string Absolute( string _path)
         {
-            return KSPPaths.FullPath( path );
+            return KSPPaths.FullPath(_path);
         }
     }
 
+    /// <summary>
+    /// Use NameContainer when you want to operate with both bare filenames and file paths
+    /// </summary>
     public class NameContainer : PathContainer
     {
-        public NameContainer(string path) : base(path) {}
-        public NameContainer(string name, string path) : base(name, path) { }
-
-        public string Path
+        protected string name;
+        public override string path
         {
-            get { return pathComponent; }
+            get { return KSPPaths.BuildPath(pathComponent, name); }
+        }
+
+        public NameContainer(string _path) : base( Path.GetDirectoryName( _path ))
+        {
+            name = Path.GetFileName(_path);
+        }
+
+        public NameContainer(string _name, string _path ) :base ( _path )
+        {
+            name = _name;
+        }
+
+        public NameContainer(AssetDefinition ass) : this(ass.name, ass.path) { }
+
+        public string fileName
+        {
+            get { return Path.GetFileNameWithoutExtension(name); }
+        }
+
+        public string Extension
+        {
+            get { return Path.GetExtension( name ).Substring(1); }
         }
 
         public static implicit operator string(NameContainer c)
         {
             return c.name;
+        }
+
+        public static NameContainer FromAssetDefinition( AssetDefinition ass )
+        {
+            return new NameContainer(ass);
         }
     }
     #endregion
@@ -421,12 +479,12 @@ namespace DLTD.Utility.AssetManagement
     #region AssetManagement
     #region Asset
     public enum AssetState { Unloaded, SourceNotReady, Loading, Compiling, Loaded, FailedToLoad }
-    public class Asset
+    public class Asset //: AssetDefinition
     {
         public NameContainer Name;
         public string Path
         {
-            get { return Name.Path; }
+            get { return Name.path; }
         }
         public Type Type;
         protected AssetSource Container;
@@ -467,56 +525,52 @@ namespace DLTD.Utility.AssetManagement
         {
             Container = container;
         }
+
     }
     #endregion
 
-    #region AssetFactory
-    public class AssetFactory
+    #region Special files
+
+    public delegate bool TagMatchAction(string tag);
+
+    [AttributeUsage(AttributeTargets.Class)]
+    public sealed class SpecialAssetMatch : Attribute
     {
-        /// <summary>
-        /// Indexed by unity object type. Directory AssetSource should match file type to unity type.
-        /// </summary>
-        private Dictionary<Type, Type> constructors;
+        public string matchString;
+        public string wellKnownAs;
+    }
 
-        public AssetFactory()
+    public abstract class SpecialTextAsset
+    {
+        protected static string NameMatch;
+        protected static TagMatchAction _match = (tag) => {
+            var tagStripped = Path.GetFileNameWithoutExtension(tag);
+            return ((tagStripped.Length > NameMatch.Length) && tagStripped.Substring(tagStripped.Length - NameMatch.Length).Equals(NameMatch, StringComparison.Ordinal));
+        };
+
+        public abstract void Parse(string source);
+        public static bool isMatch(string tag)
         {
-            constructors = new Dictionary<Type, Type>();
+            return _match.Invoke(tag);
         }
 
-        public Asset Generate( Type AssetType, params object[] args )
+        public SpecialTextAsset()
         {
-            if (constructors.ContainsKey(AssetType))
-            {
-                var newAsset = Activator.CreateInstance(constructors[AssetType], args) as Asset;
-                newAsset.Type = AssetType;
-                return newAsset;
-            }
-
-            return Activator.CreateInstance(typeof(Asset), args) as Asset;
-
-            //throw new Exception("[DLTD AssetFactory] Attempted to construct unknown asset type " + AssetType.ToString());
-        }
-
-        public void Register( Type type, Type assetType )
-        {
-            constructors[type] = assetType;
+            var attribs = GetType().GetCustomAttributes(typeof(SpecialAssetMatch), true);
+            if( attribs.Length > 0 )
+                NameMatch = (attribs[0] as SpecialAssetMatch).matchString;
         }
     }
-    #endregion
 
     #region AssetAttributes
     // Just some convenient wrappers around confignode
     // not actually C# attributes
-    public class AssetAttributes
+    [SpecialAssetMatch(matchString = "_attributes", wellKnownAs = "Attributes")]
+    public class AssetAttributes : SpecialTextAsset
     {
         private const string NodeID = "ASSET_ATTRIBUTES";
-        private const string NameMatch = "_attributes";
-        public string UnityName;
 
-        public static bool isAttributeName ( string name )
-        {
-            return ((name.Length > NameMatch.Length) && name.Substring(name.Length - NameMatch.Length).Equals( NameMatch, StringComparison.Ordinal ));
-        }
+        public string UnityName;
 
         private DictionaryValueList<string, ConfigNode> Attributes;
         public ConfigNode this[string index]
@@ -528,7 +582,7 @@ namespace DLTD.Utility.AssetManagement
             }
         }
 
-        private int ParseAttribs( string source )
+        public override void Parse( string source )
         {
             var parsed = ConfigNode.Parse(source).GetNodes(NodeID);
             var valid = 0;
@@ -542,17 +596,45 @@ namespace DLTD.Utility.AssetManagement
                     valid++;
                 }
             }
-            return valid;
         }
 
         public AssetAttributes( string source )
         {
             Attributes = new DictionaryValueList<string, ConfigNode>();
-            ParseAttribs(source);
+            Parse(source);
+        }
+
+        [SpecialAssetMatch(matchString = "_bundle", wellKnownAs = "KSPAssetDefinitions")]
+        public class KSPBundleDefinitions : SpecialTextAsset
+        {
+            private BundleDefinition bundleDefs;
+            public List<AssetDefinition> assetDefs
+            {
+                get
+                {
+                    return bundleDefs?.assets;
+                }
+            }
+
+            public AssetDefinition this[int index]
+            {
+               get { return assetDefs?[index]; }
+            }
+
+            public AssetDefinition this[string index]
+            {
+                get { return bundleDefs?.GetAssetWithPath(index); }
+            }
+
+            public override void Parse(string source)
+            {
+                bundleDefs = BundleDefinition.CreateFromText(source);
+            }
         }
     }
     #endregion
 
+    #endregion
     #region AssetSource
 
     public interface IDispatchKey
@@ -560,6 +642,7 @@ namespace DLTD.Utility.AssetManagement
         object[] Keys { get; }
     }
 
+    [AttributeUsage(AttributeTargets.Class)]
     public sealed class ValidExtensions : Attribute, IDispatchKey
     {
         public string[] extensions;
@@ -607,7 +690,7 @@ namespace DLTD.Utility.AssetManagement
             set { processor = value; }
         }
 
-        protected AssetFactory factory;
+        protected Factory<Type,Asset> assetFactory;
         internal AssetAttributes Attributes;
         public bool AttributesLoaded
         {
@@ -629,7 +712,7 @@ namespace DLTD.Utility.AssetManagement
             if (AssetManagement.instance != null)
             {
                 Processor = AssetManagement.instance;
-                factory = AssetManagement.Factory;
+                assetFactory = AssetManagement.assetFactory;
             }
             GenerateAssetList();
         }
@@ -644,6 +727,15 @@ namespace DLTD.Utility.AssetManagement
         /// </summary>
         protected abstract void GenerateAssetList();
         protected abstract string[] GetAllAssetNames();
+
+        protected void LoadAttributes(TextAsset assetObj)
+        {
+            if (!AttributesLoaded)
+            {
+                Attributes = new AssetAttributes(assetObj.text);
+                Attributes.UnityName = assetObj.name;
+            }
+        }
 
         /// <summary>
         /// Implementation should ensure the Asset object has loaded the object - Assets should know how to load
@@ -661,7 +753,7 @@ namespace DLTD.Utility.AssetManagement
 
         /// <summary>
         /// Most asset replies will be of the basic Asset type, but 
-        /// the factory can return any type of asset object
+        /// the assetFactory can return any type of asset object
         /// </summary>
         /// <typeparam name="T"></typeparam>
         /// <returns></returns>
@@ -695,7 +787,9 @@ namespace DLTD.Utility.AssetManagement
     [ValidExtensions("abl","assetbundle")]
     public class AssetBundleSource : AssetSource, IUnloadable
     {
- 
+
+        private static string bundleDefMatch = "_bundle";
+
         private static ClassStructure structure;
         protected override ClassStructure Structure {
             get { return structure; }
@@ -734,7 +828,6 @@ namespace DLTD.Utility.AssetManagement
         #endregion
 
         private AssetBundle bundle;
-        private BundleDefinition bundleDefs;
 
         private StateWithEvent<AssetAsyncState> bundleFileState = new StateWithEvent<AssetAsyncState>(AssetAsyncState.Unloaded);
 
@@ -745,6 +838,7 @@ namespace DLTD.Utility.AssetManagement
         }
 
         // don't forget to set states
+
         protected override string[] GetAllAssetNames()
         {
             if (bundleFileState.State != AssetAsyncState.Loaded)
@@ -758,13 +852,13 @@ namespace DLTD.Utility.AssetManagement
             if (bundleFileState.State != AssetAsyncState.Unloaded)
                 return;
 
-            using (WWW unityWWWStream = new WWW(KSPPaths.BuildPath("file:/", Location.Absolute())))
+            using (WWW unityWWWStream = new WWW(KSPPaths.BuildPath("file:/", (Location as NameContainer).Absolute())))
             {
                 bundleFileState.State = AssetAsyncState.Loading;
                 if (!string.IsNullOrEmpty(unityWWWStream.error))
                 {
                     bundleFileState.State = AssetAsyncState.FailedToLoad;
-                    throw new Exception("WWW failed to load asset bundle " + Location.name);
+                    throw new Exception("WWW failed to load asset bundle " + (Location as NameContainer) );
                 }
 
                 bundleFileState.State = AssetAsyncState.Loaded;
@@ -778,7 +872,7 @@ namespace DLTD.Utility.AssetManagement
             if (bundleFileState.State != AssetAsyncState.Unloaded)
                 yield break;
 
-            using (WWW unityWWWStream = new WWW(KSPPaths.BuildPath("file:/", Location.Absolute())))
+            using (WWW unityWWWStream = new WWW(KSPPaths.BuildPath("file:/", (Location as NameContainer).Absolute())))
             {
                 bundleFileState.State = AssetAsyncState.Loading;
                 yield return unityWWWStream;
@@ -786,7 +880,7 @@ namespace DLTD.Utility.AssetManagement
                 if (!string.IsNullOrEmpty(unityWWWStream.error))
                 {
                     bundleFileState.State = AssetAsyncState.FailedToLoad;
-                    throw new Exception("WWW failed to load asset bundle " + Location.name);
+                    throw new Exception("WWW failed to load asset bundle " + (Location as NameContainer));
                 }
 
                 bundleFileState.State = AssetAsyncState.Loaded;
@@ -815,11 +909,11 @@ namespace DLTD.Utility.AssetManagement
             yield return bundle;
 
             if(UnityObject == null )
-                throw new Exception("[DLTD AssetBundleSource] " + Location.name + " AssetLoaderAsync(" + name + ") failed to load asset");
+                throw new Exception("[DLTD AssetBundleSource] " + (Location as NameContainer) + " AssetLoaderAsync(" + name + ") failed to load asset");
 
-            var asset = factory.Generate(UnityObject.GetType(), LocateName(name), this);
+            var asset = assetFactory.Generate(UnityObject.GetType(), LocateName(name), this);
             if ( asset == null )
-                throw new Exception("[DLTD AssetBundleSource] " + Location.name + " AssetLoaderAsync(" + name + ") failed to generate Asset for type " + UnityObject.GetType());
+                throw new Exception("[DLTD AssetBundleSource] " + (Location as NameContainer) + " AssetLoaderAsync(" + name + ") failed to generate Asset for type " + UnityObject.GetType());
 
             Assets[name] = asset;
         }
@@ -845,32 +939,30 @@ namespace DLTD.Utility.AssetManagement
             var UnityObjects = Request.allAssets;
 
             if (UnityObjects == null)
-                throw new Exception("[DLTD AssetBundleSource] " + Location.name + " AllAssetLoaderAsync() failed to load assets");
+                throw new Exception("[DLTD AssetBundleSource] " + (Location as NameContainer) + " AllAssetLoaderAsync() failed to load assets");
 
             for( int i = 0; i < UnityObjects.Length; i++ )
             {
                 var u_obj = UnityObjects[i];
 
-                if (AssetAttributes.isAttributeName(u_obj.name))
-                {
-                    if (!AttributesLoaded)
-                    {
-                        Attributes = new AssetAttributes((u_obj as TextAsset).text);
-                        Attributes.UnityName = u_obj.name;
-                    }
-                    continue;
-                }
+                // either have to do somthing with special text files here or handle them earlier & just ignore.
 
-                if( u_obj.name.Substring( u_obj.name.Length - 7).Equals( "_bundle", StringComparison.OrdinalIgnoreCase ))
-                {
-                    bundleDefs = BundleDefinition.CreateFromText(( u_obj as TextAsset).text );
-                    continue;
-                }
+                //if (AssetAttributes.isMatch(u_obj.name))
+                //{
+                //    LoadAttributes(u_obj as TextAsset );
+                //    continue;
+                //}
+
+                //if( u_obj.name.Substring( u_obj.name.Length - 7).Equals( "_bundle", StringComparison.OrdinalIgnoreCase ))
+                //{
+                //    bundleDefs = BundleDefinition.CreateFromText(( u_obj as TextAsset).text );
+                //    continue;
+                //}
 
                 DLTDLog.Log("[DLTD AssetBundleSource] loading " + u_obj.name + " of type "+ u_obj.GetType());
-                var asset = factory.Generate(u_obj.GetType(), LocateName(u_obj.name), this);
+                var asset = assetFactory.Generate(u_obj.GetType(), LocateName(u_obj.name), this);
                 if (asset == null)
-                    throw new Exception("[DLTD AssetBundleSource] " + Location.name + " AllAssetLoaderAsync() failed to generate Asset for type " + u_obj.GetType());
+                    throw new Exception("[DLTD AssetBundleSource] " + (Location as NameContainer) + " AllAssetLoaderAsync() failed to generate Asset for type " + u_obj.GetType());
 
                 Assets[Locate(UnityObjects[i].name)] = asset;
             }
@@ -1000,7 +1092,7 @@ namespace DLTD.Utility.AssetManagement
 
         internal override UnityEngine.Object LoadObject(PathContainer name)
         {
-            return LoadObject(name.name);
+            return LoadObject((string)name);
         }
     }
     #endregion
@@ -1030,7 +1122,7 @@ namespace DLTD.Utility.AssetManagement
         public static AssetManagement instance;
         private Dictionary<string, Type> loaders;
 
-        public static AssetFactory Factory;
+        public static Factory<Type,Asset> assetFactory;
 
         public static List<AssetSource> assetSources;
 
@@ -1068,7 +1160,7 @@ namespace DLTD.Utility.AssetManagement
             var preloadFiles = Directory.GetFiles(paths["PreLoad"]);
             for ( int i = 0; i < preloadFiles.Length; i++ )
             {
-                var filePath = new PathContainer(preloadFiles[i]);
+                var filePath = new NameContainer(preloadFiles[i]);
                 var fileExt = filePath.Extension;
                 DLTDLog.Log("AssetManagement PreLoad looking at file " + filePath + ", trying extension [" + fileExt + "]");
                 if( loaders.ContainsKey( fileExt.ToLower() ))
@@ -1087,7 +1179,7 @@ namespace DLTD.Utility.AssetManagement
             DontDestroyOnLoad(this);
 
             unloadQueue = new List<IUnloadable>();
-            Factory = new AssetFactory();
+            assetFactory = new Factory<Type,Asset>();
             paths = new ValidatedKSPPaths();
             loaders = new Dictionary<string, Type>();
             assetSources = new List<AssetSource>();

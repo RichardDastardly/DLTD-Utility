@@ -68,7 +68,7 @@ namespace DLTD.Utility.TestHarness
                 var alist = s.GetAssets();
                 for(int i = 0; i < alist.Length; i++)
                     if ( alist[i] != null )
-                        dbg.Print("AssetList " + tag + "[" + i + "] " + alist[i].Name);
+                        dbg.Print("AssetList " + tag + "[" + i + "] " + alist[i].UnityAsset.name);
             }
         }
     }
