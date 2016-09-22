@@ -6,7 +6,7 @@ namespace DLTD.Utility.TestHarness
     [KSPAddon(KSPAddon.Startup.Instantly, true)]
     class TestHarness : MonoBehaviour
     {
-        public AssetManagement.KSPPaths pathTest;
+        public KSPPaths pathTest;
         private DLTDLog dbg;
 
         public TestHarness()
@@ -16,7 +16,7 @@ namespace DLTD.Utility.TestHarness
 
         public void Awake()
         {
-            pathTest = new AssetManagement.KSPPaths();
+            pathTest = new KSPPaths();
             pathTest.Manufacturer = null;
             var pathKeys = pathTest.pathKeys;
 

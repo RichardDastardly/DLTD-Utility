@@ -100,6 +100,11 @@ namespace DLTD.Utility.AssetManagement
             constructors = new Dictionary<I, Type>();
         }
 
+        public bool ContainsKey( I key )
+        {
+            return constructors.ContainsKey(key);
+        }
+
         public T Generate(I index, params object[] args)
         {
             if (constructors.ContainsKey(index))
@@ -179,6 +184,72 @@ namespace DLTD.Utility.AssetManagement
     #endregion
 
     #region AssetManagement
+
+    #region AssetTypeComposite
+    public class AssetTypeComposite 
+    {
+        public string[] extensions;
+        public string unityType;
+        public Type type;
+        // make methods static, implement IEqualityComparer
+        private bool checkExtensions( string ext )
+        {
+            for (int i = 0; i < extensions.Length; i++)
+                if (extensions[i].Equals(ext, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            return false;
+        }
+
+        public bool Equals( Type checkType )
+        {
+            return (type == checkType);
+        }
+
+        public bool Equals( string checkUnityType )
+        {
+            return (unityType.Equals(checkUnityType, StringComparison.OrdinalIgnoreCase));
+        }
+
+        public bool Equals ( string[] checkExt )
+        {
+            for (int i = 0; i < checkExt.Length; i++)
+                if (checkExtensions(checkExt[i]))
+                    return true;
+
+            return false;
+        }
+
+        public bool Equals( AssetTypeComposite check )
+        {
+            if (Equals(check.unityType))
+                return true;
+
+            if (Equals(check.type))
+                return true;
+
+            if (Equals(check.extensions))
+                return true;
+
+            return false;
+        }
+
+        public bool Equals( string checkUnityType = null, Type checkType = null, string[] checkExt = null )
+        {
+            if (checkUnityType != null && Equals(checkUnityType))
+                return true;
+
+            if (checkType != null && Equals(checkType))
+                return true;
+
+            if (checkExt != null && Equals(checkExt))
+                return true;
+
+            return false;
+        }
+
+    }
+    #endregion
+
     #region Asset
     public enum AssetState { Unloaded, SourceNotReady, Loading, Compiling, Loaded, FailedToLoad }
     public class Asset //: AssetDefinition
@@ -361,15 +432,10 @@ namespace DLTD.Utility.AssetManagement
         }
     }
     
-    public interface IAssetSourceDispatcher
-    {
-        void RegisterHandler(Type handler, string[] extensions);
-        AssetSource DispatchAssetSource(string extension, params object[] args);
-    }
-
     // May want two enums
     public enum AssetSourceState { Unloaded, Unscanned, Scanning, Scanned, LoadingAsset, Loaded }
     public enum AssetAsyncState { Unloaded, Loading, Loaded, FailedToLoad }
+
     public abstract class AssetSource
     {
         protected abstract ClassStructure Structure { get; set; }
@@ -489,9 +555,6 @@ namespace DLTD.Utility.AssetManagement
     [ValidExtensions("abl","assetbundle")]
     public class AssetBundleSource : AssetSource, IUnloadable
     {
-
-        private static string bundleDefMatch = "_bundle";
-
         private static ClassStructure structure;
         protected override ClassStructure Structure {
             get { return structure; }
@@ -818,12 +881,12 @@ namespace DLTD.Utility.AssetManagement
     }
 
     [KSPAddon(KSPAddon.Startup.Instantly, true)]
-    public class AssetManagement : MonoBehaviour, IUnloader, IAssetSourceDispatcher
+    public class AssetManagement : MonoBehaviour, IUnloader
     { 
         private ValidatedKSPPaths paths;
         public static AssetManagement instance;
-        private Dictionary<string, Type> loaders;
 
+        public static Factory<string, AssetSource> assetSourceFactory;
         public static Factory<Type,Asset> assetFactory;
 
         public static List<AssetSource> assetSources;
@@ -865,10 +928,10 @@ namespace DLTD.Utility.AssetManagement
                 var filePath = new NameContainer(preloadFiles[i]);
                 var fileExt = filePath.Extension;
                 DLTDLog.Log("AssetManagement PreLoad looking at file " + filePath + ", trying extension [" + fileExt + "]");
-                if( loaders.ContainsKey( fileExt.ToLower() ))
+                if(assetSourceFactory.ContainsKey( fileExt.ToLower() ))
                 {
                     DLTDLog.Log("AssetManagement PreLoad loading file " + filePath);
-                    assetSources.Add(DispatchAssetSource(fileExt, filePath ));
+                    assetSources.Add(assetSourceFactory.Generate(fileExt, filePath ));
                 }
             }
         }
@@ -882,8 +945,8 @@ namespace DLTD.Utility.AssetManagement
 
             unloadQueue = new List<IUnloadable>();
             assetFactory = new Factory<Type,Asset>();
+            assetSourceFactory = new Factory<string, AssetSource>();
             paths = new ValidatedKSPPaths();
-            loaders = new Dictionary<string, Type>();
             assetSources = new List<AssetSource>();
 
             RegisterDispatchableTypes();
@@ -901,7 +964,7 @@ namespace DLTD.Utility.AssetManagement
         {
             var types = Assembly.GetAssembly(GetType()).GetTypes();
             for( int i = 0; i < types.Length; i++ )
-                if( types[i] != null )
+                if( types[i] != null && typeof(AssetSource).IsAssignableFrom(types[i]))
                 {
                     var attr = types[i].GetCustomAttributes(true);
                     if( attr.Length > 0 )
@@ -928,16 +991,8 @@ namespace DLTD.Utility.AssetManagement
                 if (extensions[i] == null)
                     break;
                 DLTDLog.Log("Registering fileExt [" + extensions[i].ToLower() + "] for type " + handler.ToString());
-                loaders[extensions[i].ToLower()] = handler;
+                assetSourceFactory.Register(extensions[i].ToLower(), handler);
             }
-        }
-
-        public AssetSource DispatchAssetSource(string extension, params object[] args )
-        {
-            Type _loader;
-            if (loaders.TryGetValue(extension.ToLower(), out _loader))
-                return Activator.CreateInstance( _loader, args ) as AssetSource;
-            return null;
         }
         #endregion
 
