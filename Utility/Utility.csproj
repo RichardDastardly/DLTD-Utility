@@ -59,6 +59,7 @@
     <Compile Include="AssetManagement.cs" />
     <Compile Include="Logging.cs" />
     <Compile Include="ClassStructure.cs" />
+    <Compile Include="PathTools.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="TestHarness.cs" />
   </ItemGroup>
