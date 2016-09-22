@@ -61,6 +61,15 @@ namespace DLTD.Utility.TestHarness
             DumpContents(GDi.databaseModel, "databaseModel");
             DumpContents(GDi.databaseAudio, "databaseAudio");
             DumpContents(GDi.databaseShaders, "databaseShaders");
+
+            var assSources = AssetManagement.AssetManagement.assetSources;
+            foreach( var s in assSources )
+            {
+                var alist = s.GetAssets();
+                for(int i = 0; i < alist.Length; i++)
+                    if ( alist[i] != null )
+                        dbg.Print("AssetList " + tag + "[" + i + "] " + alist[i].Name);
+            }
         }
     }
 }

@@ -3,6 +3,7 @@ using System.IO;
 using System.Reflection;
 using System.Collections;
 using System.Collections.Generic;
+using System.Text.RegularExpressions;
 using UnityEngine;
 using KSPAssets;
 
@@ -93,11 +94,24 @@ namespace DLTD.Utility.AssetManagement
     public class PathContainer
     {
         public string pathComponent;
+        protected string _name;
 
-        public PathContainer(string path) { pathComponent = path.Replace("//", "/"); }
+        public PathContainer(string path) {
+            pathComponent = Regex.Replace( path, @"[\\/]+", KSPPaths.pathSeparator.ToString() );
+        }
+
+        public PathContainer( string name, string path ) : this ( path )
+        {
+            _name = name;
+        }
+
         public string name
         {
-            get { return Path.GetFileName(pathComponent); }
+            get { return (_name != null ) ? _name : Path.GetFileName(pathComponent); }
+        }
+        public string Extension
+        {
+            get { return Path.GetExtension(pathComponent).Substring(1); }
         }
 
         public static implicit operator string(PathContainer c)
@@ -124,6 +138,8 @@ namespace DLTD.Utility.AssetManagement
     public class NameContainer : PathContainer
     {
         public NameContainer(string path) : base(path) {}
+        public NameContainer(string name, string path) : base(name, path) { }
+
         public string Path
         {
             get { return pathComponent; }
@@ -385,8 +401,9 @@ namespace DLTD.Utility.AssetManagement
 
         protected virtual void OnStateChange()
         {
-            StateChangeEvent(state);
-            stateEvents[state](state);
+            StateChangeEvent?.Invoke(state);
+            if( stateEvents.ContainsKey( state ))
+                stateEvents[state]?.Invoke(state);
         }
 
         public void Install( T state, StateChangeEvent<T> handler )
@@ -406,14 +423,14 @@ namespace DLTD.Utility.AssetManagement
     public enum AssetState { Unloaded, SourceNotReady, Loading, Compiling, Loaded, FailedToLoad }
     public class Asset
     {
-        protected NameContainer Name;
+        public NameContainer Name;
         public string Path
         {
             get { return Name.Path; }
         }
         public Type Type;
         protected AssetSource Container;
-        public ConfigNode attributes;
+        protected ConfigNode attributes;
         public ConfigNode Attributes
         {
             get
@@ -434,7 +451,7 @@ namespace DLTD.Utility.AssetManagement
             get
             {
                 if (UEObject == null)
-                    UEObject = Container.LoadObject(Path);
+                    UEObject = Container.LoadObject(Name);
                 return UEObject;
             }
         }
@@ -475,7 +492,9 @@ namespace DLTD.Utility.AssetManagement
                 return newAsset;
             }
 
-            throw new Exception("[DLTD AssetFactory] Attempted to construct unknown asset type " + AssetType.ToString());
+            return Activator.CreateInstance(typeof(Asset), args) as Asset;
+
+            //throw new Exception("[DLTD AssetFactory] Attempted to construct unknown asset type " + AssetType.ToString());
         }
 
         public void Register( Type type, Type assetType )
@@ -535,21 +554,32 @@ namespace DLTD.Utility.AssetManagement
     #endregion
 
     #region AssetSource
-    public sealed class ValidExtensions : Attribute
+
+    public interface IDispatchKey
     {
-        string[] extensions;
-        string description;
+        object[] Keys { get; }
+    }
+
+    public sealed class ValidExtensions : Attribute, IDispatchKey
+    {
+        public string[] extensions;
+        public object[] Keys
+        {
+            get { return extensions; }
+        }
+
+        public string description;
 
         public ValidExtensions(params string[] Extensions)
         {
             extensions = Extensions;
         }
     }
-
+    
     public interface IAssetSourceDispatcher
     {
-        void RegisterHandler(AssetSource handler, string[] extensions);
-        AssetSource DispatchAssetSource(string extension);
+        void RegisterHandler(Type handler, string[] extensions);
+        AssetSource DispatchAssetSource(string extension, params object[] args);
     }
 
     // May want two enums
@@ -558,12 +588,16 @@ namespace DLTD.Utility.AssetManagement
     public abstract class AssetSource
     {
         protected abstract ClassStructure Structure { get; set; }
-        protected IAssetSourceDispatcher Dispatcher;
 
         protected PathContainer Location;
         public NameContainer Locate(string path)
         {
             return new NameContainer(KSPPaths.BuildPath(Location, path));
+        }
+
+        public NameContainer LocateName(string name)
+        {
+            return new NameContainer(name, Location );
         }
 
         public DictionaryValueList<PathContainer, Asset> Assets;
@@ -585,18 +619,19 @@ namespace DLTD.Utility.AssetManagement
         public AssetSource( PathContainer path )
         {
             Location = path;
+            Assets = new DictionaryValueList<PathContainer, Asset>();
             State = new StateWithEvent<AssetSourceState>();
+            State.State = AssetSourceState.Unloaded;
 
             if (Structure == null)
                 Structure = new ClassStructure(this);
 
-            Dispatcher = AssetManagement.instance;
-
-            if( AssetManagement.instance != null )
+            if (AssetManagement.instance != null)
             {
                 Processor = AssetManagement.instance;
                 factory = AssetManagement.Factory;
             }
+            GenerateAssetList();
         }
 
         protected void StartCoroutine( IEnumerator function )
@@ -608,6 +643,7 @@ namespace DLTD.Utility.AssetManagement
         /// Implementation should populate Assets - should not actually load assets
         /// </summary>
         protected abstract void GenerateAssetList();
+        protected abstract string[] GetAllAssetNames();
 
         /// <summary>
         /// Implementation should ensure the Asset object has loaded the object - Assets should know how to load
@@ -619,6 +655,7 @@ namespace DLTD.Utility.AssetManagement
         public abstract Asset GetAsset(string name);
         public abstract Asset GetAsset(PathContainer name);
 
+        public abstract Asset[] GetAssets();
         public abstract Asset[] GetAssets(string[] names);
         public abstract Asset[] GetAssets(PathContainer[] names);
 
@@ -658,6 +695,7 @@ namespace DLTD.Utility.AssetManagement
     [ValidExtensions("abl","assetbundle")]
     public class AssetBundleSource : AssetSource, IUnloadable
     {
+ 
         private static ClassStructure structure;
         protected override ClassStructure Structure {
             get { return structure; }
@@ -670,7 +708,7 @@ namespace DLTD.Utility.AssetManagement
         private int _TTL = Constant.defaultTTL;
         public int TTL
         {
-            get { return TTL;  }
+            get { return _TTL;  }
             set { _TTL = value; }
         }
 
@@ -685,6 +723,8 @@ namespace DLTD.Utility.AssetManagement
         {
             if (bundle != null)
                 bundle.Unload(unloadAll);
+
+            bundleFileState.State = AssetAsyncState.Unloaded;
         }
 
         public void ResetTTL()
@@ -694,6 +734,9 @@ namespace DLTD.Utility.AssetManagement
         #endregion
 
         private AssetBundle bundle;
+        private BundleDefinition bundleDefs;
+
+        private StateWithEvent<AssetAsyncState> bundleFileState = new StateWithEvent<AssetAsyncState>(AssetAsyncState.Unloaded);
 
         public AssetBundleSource(PathContainer path) : base(path)
         {
@@ -702,26 +745,71 @@ namespace DLTD.Utility.AssetManagement
         }
 
         // don't forget to set states
-
-        private IEnumerator LoadBundle()
+        protected override string[] GetAllAssetNames()
         {
-            using (WWW unityWWWStream = new WWW(Location))
+            if (bundleFileState.State != AssetAsyncState.Loaded)
+                return null;
+
+            return bundle.GetAllAssetNames();
+        }
+
+        private void LoadBundleImmediate()
+        {
+            if (bundleFileState.State != AssetAsyncState.Unloaded)
+                return;
+
+            using (WWW unityWWWStream = new WWW(KSPPaths.BuildPath("file:/", Location.Absolute())))
             {
-                yield return unityWWWStream;
+                bundleFileState.State = AssetAsyncState.Loading;
                 if (!string.IsNullOrEmpty(unityWWWStream.error))
                 {
-                    throw new Exception("WWW failed to load asset bundle " + Location.name );
+                    bundleFileState.State = AssetAsyncState.FailedToLoad;
+                    throw new Exception("WWW failed to load asset bundle " + Location.name);
                 }
 
+                bundleFileState.State = AssetAsyncState.Loaded;
                 bundle = unityWWWStream.assetBundle;
                 Unloader.queueForUnload(this);
             }
         }
 
+        private IEnumerator LoadBundle()
+        {
+            if (bundleFileState.State != AssetAsyncState.Unloaded)
+                yield break;
+
+            using (WWW unityWWWStream = new WWW(KSPPaths.BuildPath("file:/", Location.Absolute())))
+            {
+                bundleFileState.State = AssetAsyncState.Loading;
+                yield return unityWWWStream;
+
+                if (!string.IsNullOrEmpty(unityWWWStream.error))
+                {
+                    bundleFileState.State = AssetAsyncState.FailedToLoad;
+                    throw new Exception("WWW failed to load asset bundle " + Location.name);
+                }
+
+                bundleFileState.State = AssetAsyncState.Loaded;
+                bundle = unityWWWStream.assetBundle;
+                Unloader.queueForUnload(this);
+            }
+        }
+
+        // this and below need combining somehow
         private IEnumerator AssetLoaderAsync(NameContainer name )
         {
-            if (bundle == null)
-                throw new Exception("[DLTD AssetBundleSource] " + Location.name + " AssetLoaderAsync("+name+") attempted to load from unloaded bundle");
+            if (bundleFileState == AssetAsyncState.FailedToLoad)
+                yield break;
+
+            if (bundleFileState == AssetAsyncState.Unloaded)
+                StartCoroutine(LoadBundle());
+
+            while( bundleFileState != AssetAsyncState.Loaded )
+            {
+                if(bundleFileState == AssetAsyncState.FailedToLoad)
+                    yield break;
+                yield return bundleFileState;
+            }
 
             var UnityObject = bundle.LoadAssetAsync(name);
             yield return bundle;
@@ -729,7 +817,7 @@ namespace DLTD.Utility.AssetManagement
             if(UnityObject == null )
                 throw new Exception("[DLTD AssetBundleSource] " + Location.name + " AssetLoaderAsync(" + name + ") failed to load asset");
 
-            var asset = factory.Generate(UnityObject.GetType(), Locate(name), this);
+            var asset = factory.Generate(UnityObject.GetType(), LocateName(name), this);
             if ( asset == null )
                 throw new Exception("[DLTD AssetBundleSource] " + Location.name + " AssetLoaderAsync(" + name + ") failed to generate Asset for type " + UnityObject.GetType());
 
@@ -738,8 +826,18 @@ namespace DLTD.Utility.AssetManagement
 
         private IEnumerator AllAssetLoaderAsync()
         {
-            if (bundle == null)
-                throw new Exception("[DLTD AssetBundleSource] " + Location.name + " AllAssetLoaderAsync() attempted to load from unloaded bundle");
+            if (bundleFileState.State == AssetAsyncState.FailedToLoad)
+                yield break;
+
+            if (bundleFileState.State == AssetAsyncState.Unloaded)
+                StartCoroutine(LoadBundle());
+
+            while (bundleFileState.State != AssetAsyncState.Loaded)
+            {
+                if (bundleFileState.State == AssetAsyncState.FailedToLoad)
+                    yield break;
+                yield return AssetAsyncState.Loading;
+            }
 
             var Request = bundle.LoadAllAssetsAsync();
             yield return Request;
@@ -763,7 +861,14 @@ namespace DLTD.Utility.AssetManagement
                     continue;
                 }
 
-                var asset = factory.Generate(u_obj.GetType(), Locate(u_obj.name), this);
+                if( u_obj.name.Substring( u_obj.name.Length - 7).Equals( "_bundle", StringComparison.OrdinalIgnoreCase ))
+                {
+                    bundleDefs = BundleDefinition.CreateFromText(( u_obj as TextAsset).text );
+                    continue;
+                }
+
+                DLTDLog.Log("[DLTD AssetBundleSource] loading " + u_obj.name + " of type "+ u_obj.GetType());
+                var asset = factory.Generate(u_obj.GetType(), LocateName(u_obj.name), this);
                 if (asset == null)
                     throw new Exception("[DLTD AssetBundleSource] " + Location.name + " AllAssetLoaderAsync() failed to generate Asset for type " + u_obj.GetType());
 
@@ -791,6 +896,15 @@ namespace DLTD.Utility.AssetManagement
 
             Assets.TryGetValue(name, out locatedAsset);
             return locatedAsset;
+        }
+
+        public override Asset[] GetAssets()
+        {
+            var results = new Asset[Assets.Count];
+            for (int i = 0; i < Assets.Count; i++)
+                results[i] = Assets.At(i);
+
+            return results;
         }
 
         public override Asset[] GetAssets(string[] names)
@@ -870,12 +984,23 @@ namespace DLTD.Utility.AssetManagement
 
         internal override UnityEngine.Object LoadObject(string name)
         {
-            throw new NotImplementedException();
+            LoadBundleImmediate();
+            if (bundleFileState.State == AssetAsyncState.FailedToLoad)
+                return null;
+
+            var names = GetAllAssetNames();
+            for (int i = 0; i < names.Length; i++)
+                DLTDLog.Log("LoadObject dump asset names: " + names[i]);
+
+            DLTDLog.Log("LoadObject loading " + name);
+            var result =  bundle.LoadAsset(name);
+            DLTDLog.Log("LoadObject attempted load " + name + " [" + result?.ToString()+"]");
+            return result;
         }
 
         internal override UnityEngine.Object LoadObject(PathContainer name)
         {
-            throw new NotImplementedException();
+            return LoadObject(name.name);
         }
     }
     #endregion
@@ -900,12 +1025,14 @@ namespace DLTD.Utility.AssetManagement
 
     [KSPAddon(KSPAddon.Startup.Instantly, true)]
     public class AssetManagement : MonoBehaviour, IUnloader, IAssetSourceDispatcher
-    {
+    { 
         private ValidatedKSPPaths paths;
         public static AssetManagement instance;
-        private Dictionary<string, AssetSource> loaders;
+        private Dictionary<string, Type> loaders;
 
         public static AssetFactory Factory;
+
+        public static List<AssetSource> assetSources;
 
         #region Unload queue
         private List<IUnloadable> unloadQueue;
@@ -935,6 +1062,24 @@ namespace DLTD.Utility.AssetManagement
         }
         #endregion
 
+        #region Preload
+        private void PreloadDLTDGlobalAssets()
+        {
+            var preloadFiles = Directory.GetFiles(paths["PreLoad"]);
+            for ( int i = 0; i < preloadFiles.Length; i++ )
+            {
+                var filePath = new PathContainer(preloadFiles[i]);
+                var fileExt = filePath.Extension;
+                DLTDLog.Log("AssetManagement PreLoad looking at file " + filePath + ", trying extension [" + fileExt + "]");
+                if( loaders.ContainsKey( fileExt.ToLower() ))
+                {
+                    DLTDLog.Log("AssetManagement PreLoad loading file " + filePath);
+                    assetSources.Add(DispatchAssetSource(fileExt, filePath ));
+                }
+            }
+        }
+        #endregion
+
         #region Unity
         public void Awake()
         {
@@ -944,7 +1089,11 @@ namespace DLTD.Utility.AssetManagement
             unloadQueue = new List<IUnloadable>();
             Factory = new AssetFactory();
             paths = new ValidatedKSPPaths();
-            loaders = new Dictionary<string, AssetSource>();
+            loaders = new Dictionary<string, Type>();
+            assetSources = new List<AssetSource>();
+
+            RegisterDispatchableTypes();
+            PreloadDLTDGlobalAssets();
 
         }
 
@@ -953,23 +1102,50 @@ namespace DLTD.Utility.AssetManagement
             processUnloadQueue();
         }
 
-        public void RegisterHandler(AssetSource handler, string[] extensions)
+        #region IAssetSourceDispatcher
+        private void RegisterDispatchableTypes()
+        {
+            var types = Assembly.GetAssembly(GetType()).GetTypes();
+            for( int i = 0; i < types.Length; i++ )
+                if( types[i] != null )
+                {
+                    var attr = types[i].GetCustomAttributes(true);
+                    if( attr.Length > 0 )
+                    {
+                        for( int j = 0; j < attr.Length; j++ )
+                        {
+                            var interfaces = attr[j].GetType().GetInterfaces();
+                            for( int k = 0; k < interfaces.Length; k++ )
+                            {
+                                if(interfaces[k] == typeof(IDispatchKey))
+                                {
+                                    RegisterHandler(types[i], (attr[j] as IDispatchKey).Keys as string[]);
+                                }
+                            }
+                        }
+                    }
+                }
+        }
+
+        public void RegisterHandler(Type handler, string[] extensions)
         {
             for (int i = 0; i < extensions.Length; i++)
             {
                 if (extensions[i] == null)
                     break;
+                DLTDLog.Log("Registering fileExt [" + extensions[i].ToLower() + "] for type " + handler.ToString());
                 loaders[extensions[i].ToLower()] = handler;
             }
         }
 
-        public AssetSource DispatchAssetSource(string extension)
+        public AssetSource DispatchAssetSource(string extension, params object[] args )
         {
-            AssetSource _loader;
+            Type _loader;
             if (loaders.TryGetValue(extension.ToLower(), out _loader))
-                return _loader;
+                return Activator.CreateInstance( _loader, args ) as AssetSource;
             return null;
         }
+        #endregion
 
         #endregion
 
