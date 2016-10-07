@@ -17,7 +17,7 @@ namespace DLTD.Utility
     /// <summary>
     /// Use PathContainer to store directory paths and file paths where you won't want to operate with the plain filename
     /// </summary>
-    public class PathContainer
+    public class PathContainer : IEquatable<string>
     {
         protected string pathcomponent;
         public string pathComponent
@@ -53,6 +53,16 @@ namespace DLTD.Utility
         public static string Absolute(string _path)
         {
             return KSPPaths.FullPath(_path);
+        }
+
+        public bool Equals(string other)
+        {
+            return path.Equals(other, StringComparison.OrdinalIgnoreCase);
+        }
+
+        public override string ToString()
+        {
+            return path;
         }
     }
 

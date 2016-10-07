@@ -313,7 +313,7 @@ namespace DLTD.Utility.AssetManagement
         public string wellKnownAs;
     }
 
-    public abstract class SpecialTextAsset
+    public abstract class SpecialAsset
     {
         protected static string NameMatch;
         protected static TagMatchAction _match = (tag) => {
@@ -327,7 +327,7 @@ namespace DLTD.Utility.AssetManagement
             return _match.Invoke(tag);
         }
 
-        public SpecialTextAsset()
+        public SpecialAsset()
         {
             var attribs = GetType().GetCustomAttributes(typeof(SpecialAssetMatch), true);
             if( attribs.Length > 0 )
@@ -339,7 +339,7 @@ namespace DLTD.Utility.AssetManagement
     // Just some convenient wrappers around confignode
     // not actually C# attributes
     [SpecialAssetMatch(matchString = "_attributes", wellKnownAs = "Attributes")]
-    public class AssetAttributes : SpecialTextAsset
+    public class AssetAttributes : SpecialAsset
     {
         private const string NodeID = "ASSET_ATTRIBUTES";
 
@@ -355,7 +355,7 @@ namespace DLTD.Utility.AssetManagement
             }
         }
 
-        public override void Parse( string source )
+        public override void Parse(string source)
         {
             var parsed = ConfigNode.Parse(source).GetNodes(NodeID);
             var valid = 0;
@@ -371,40 +371,42 @@ namespace DLTD.Utility.AssetManagement
             }
         }
 
-        public AssetAttributes( string source )
+        public AssetAttributes(string source)
         {
             Attributes = new DictionaryValueList<string, ConfigNode>();
             Parse(source);
         }
+    }
 
-        [SpecialAssetMatch(matchString = "_bundle", wellKnownAs = "KSPAssetDefinitions")]
-        public class KSPBundleDefinitions : SpecialTextAsset
+
+    [SpecialAssetMatch(matchString = "_bundle", wellKnownAs = "KSPAssetDefinitions")]
+    public class KSPBundleDefinitions : SpecialAsset
+    {
+        private BundleDefinition bundleDefs;
+        public List<AssetDefinition> assetDefs
         {
-            private BundleDefinition bundleDefs;
-            public List<AssetDefinition> assetDefs
+            get
             {
-                get
-                {
-                    return bundleDefs?.assets;
-                }
-            }
-
-            public AssetDefinition this[int index]
-            {
-               get { return assetDefs?[index]; }
-            }
-
-            public AssetDefinition this[string index]
-            {
-                get { return bundleDefs?.GetAssetWithPath(index); }
-            }
-
-            public override void Parse(string source)
-            {
-                bundleDefs = BundleDefinition.CreateFromText(source);
+                return bundleDefs?.assets;
             }
         }
+
+        public AssetDefinition this[int index]
+        {
+            get { return assetDefs?[index]; }
+        }
+
+        public AssetDefinition this[string index]
+        {
+            get { return bundleDefs?.GetAssetWithPath(index); }
+        }
+
+        public override void Parse(string source)
+        {
+            bundleDefs = BundleDefinition.CreateFromText(source);
+        }
     }
+
     #endregion
 
     #endregion
@@ -505,38 +507,17 @@ namespace DLTD.Utility.AssetManagement
             }
         }
 
-        /// <summary>
-        /// Implementation should ensure the Asset object has loaded the object - Assets should know how to load
-        /// their own Unity objects, but querying an asset object for it's Unity object should be synchronous
-        /// unless there is an immediate substitute.
-        /// </summary>
-        /// <param name="name">Asset name/path or PathContainer</param>
-        /// <returns></returns>
-        public abstract Asset GetAsset(string name);
-        public abstract Asset GetAsset(PathContainer name);
+        // Use this when traversing Assets and you want to look up strings
+        protected class PathOperation : PathContainer
+        {
+            public PathOperation(string path) : base(path) { }
 
-        public abstract Asset[] GetAssets();
-        public abstract Asset[] GetAssets(string[] names);
-        public abstract Asset[] GetAssets(PathContainer[] names);
-
-        /// <summary>
-        /// Most asset replies will be of the basic Asset type, but 
-        /// the assetFactory can return any type of asset object
-        /// </summary>
-        /// <typeparam name="T"></typeparam>
-        /// <returns></returns>
-        public abstract Asset[] GetAssetsOfType<T>() where T : Asset;
-        /// <summary>
-        /// pathFilter is intended to be a substring to enable loading assets from a specific directory.
-        /// assetbundle should probably just implement this by ignoring the match
-        /// </summary>
-        /// <typeparam name="T">Type of assets to filter</typeparam>
-        /// <param name="pathFilter">substring match for name filtering</param>
-        /// <returns></returns>
-        public abstract Asset[] GetAssetsOfType<T>( string pathFilter ) where T : Asset;
-
-        public abstract Asset[] GetAssetsOfUnityType<T>() where T : UnityEngine.Object;
-
+            public string set
+            {
+                set { pathcomponent = value; }
+            }
+        }
+        
         /// <summary>
         /// Used by Asset objects to load Unity objects
         /// </summary>
@@ -545,10 +526,178 @@ namespace DLTD.Utility.AssetManagement
         internal abstract UnityEngine.Object LoadObject(string name);
         internal abstract UnityEngine.Object LoadObject(PathContainer name);
 
+        #region accessor methods
+
         internal virtual UnityEngine.Object LoadObjectAsync(string name, StateChangeEvent<AssetAsyncState> callback) { return null; }
         internal virtual UnityEngine.Object LoadObjectAsync(PathContainer name, StateChangeEvent<AssetAsyncState> callback) { return null; }
-    }
 
+        public virtual Asset GetAsset(string name)
+        {
+            var nameAsKey = Locate(name);
+            return GetAsset(nameAsKey);
+        }
+
+        public virtual Asset GetAsset(PathContainer name)
+        {
+            Asset locatedAsset;
+
+            // In future, have this fall back to querying the GameDatabase proxy
+
+            Assets.TryGetValue(name, out locatedAsset);
+            return locatedAsset;
+        }
+
+        public virtual Asset[] GetAssets()
+        {
+            var results = new Asset[Assets.Count];
+            for (int i = 0; i < Assets.Count; i++)
+                results[i] = Assets.At(i);
+
+            return results;
+        }
+
+        public virtual Asset[] GetAssets(string[] names)
+        {
+            Asset[] locatedAssets = new Asset[names.Length];
+            int locatedCount = 0;
+
+            for (int i = 0; i < names.Length; i++)
+            {
+                Asset thisLocatedAsset;
+                if (Assets.TryGetValue(Locate(names[i]), out thisLocatedAsset))
+                    locatedAssets[locatedCount++] = thisLocatedAsset;
+            }
+            return locatedAssets;
+        }
+
+        public virtual Asset[] GetAssets(PathContainer[] names)
+        {
+            return GetAssets(Array.ConvertAll(names, item => (string)item));
+        }
+
+
+        /// <summary>
+        /// Most asset replies will be of the basic Asset type, but 
+        /// the assetFactory can return any type of asset object
+        /// The return type is not bounded by number of located assets - check for null
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <returns></returns>
+        /// <summary>
+        public virtual Asset[] GetAssetsOfType<T>() where T : Asset
+        {
+            Asset[] locatedAssets = new T[Assets.Count];
+            int locatedCount = 0;
+
+            for (int i = 0; i < Assets.Count; i++)
+            {
+                var curAsset = Assets.At(i);
+                if (curAsset.GetType() == typeof(T))
+                    locatedAssets[locatedCount++] = curAsset;
+            }
+            return locatedAssets;
+        }
+
+        /// <summary>
+        /// pathFilter is intended to be a substring to enable loading assets from a specific directory.
+        /// assetbundle should probably just implement this by ignoring the match
+        /// </summary>
+        /// <typeparam name="T">Type of assets to filter</typeparam>
+        /// <param name="pathFilter">substring match for name filtering</param>
+        /// <returns></returns>
+        public virtual Asset[] GetAssetsOfType<T>(string pathFilter) where T : Asset
+        {
+            Asset[] locatedAssets = new T[Assets.Count];
+            int locatedCount = 0;
+
+            for (int i = 0; i < Assets.Count; i++)
+            {
+                var curAsset = Assets.At(i);
+                if ((curAsset.GetType() == typeof(T)) && pathFilter.Equals(curAsset.Path.Substring(0, pathFilter.Length), StringComparison.OrdinalIgnoreCase))
+                    locatedAssets[locatedCount++] = curAsset;
+            }
+
+            return locatedAssets;
+        }
+
+        /// <summary>
+        /// The return type is not bounded by number of located assets - check for null
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <returns></returns>
+        public virtual Asset[] GetAssetsOfUnityType<T>()
+        {
+            Asset[] locatedAssets = new Asset[Assets.Count];
+            int locatedCount = 0;
+
+            for (int i = 0; i < Assets.Count; i++)
+            {
+                var curAsset = Assets.At(i);
+                if (curAsset.Type == typeof(T))
+                    locatedAssets[locatedCount++] = curAsset;
+            }
+            return locatedAssets;
+        }
+
+        /// <summary>
+        /// Enumerators should be used where the results are going to be used directly, rather than a container reused.
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="pathFilter"></param>
+        /// <returns></returns>
+        public virtual IEnumerator EnumerateAssets(string[] names)
+        {
+            PathOperation op = new PathOperation("");
+
+            for (int i = 0; i < names.Length; i++)
+            {
+                Asset outValue;
+                op.set = names[i];
+                if (Assets.TryGetValue(op, out outValue))
+                    yield return outValue;
+            }
+            yield return null;
+        }
+
+        public virtual IEnumerator EnumerateAssets(PathContainer[] names)
+        {
+            for (int i = 0; i < names.Length; i++)
+            {
+                Asset outValue;
+                if (Assets.TryGetValue(names[i], out outValue))
+                    yield return outValue;
+            }
+            yield return null;
+        }
+
+        public virtual IEnumerator EnumerateAssetsOfType<T>(string pathFilter = null)
+        {
+            foreach (var key in Assets.Keys)
+            {
+                if (pathFilter != null && String.Compare(pathFilter, key.path.Substring(0, pathFilter.Length), StringComparison.OrdinalIgnoreCase) != 0)
+                    continue;
+
+                if (Assets[key].GetType() == typeof(T))
+                    yield return Assets[key];
+            }
+            yield return null;
+        }
+
+        public virtual IEnumerator EnumerateAssetsOfUnityType<T>(string pathFilter = null)
+        {
+            foreach (var key in Assets.Keys)
+            {
+                if (pathFilter != null && String.Compare(pathFilter, key.path.Substring(0, pathFilter.Length), StringComparison.OrdinalIgnoreCase) != 0)
+                    continue;
+
+                if (Assets[key].Type == typeof(T))
+                    yield return Assets[key];
+            }
+            yield return null;
+        }
+
+    }
+    #endregion
     #endregion
 
     #region AssetBundleSource
@@ -723,6 +872,8 @@ namespace DLTD.Utility.AssetManagement
                 //    bundleDefs = BundleDefinition.CreateFromText(( u_obj as TextAsset).text );
                 //    continue;
                 //}
+                
+                // default creation type is Asset
 
                 DLTDLog.Log("[DLTD AssetBundleSource] loading " + u_obj.name + " of type "+ u_obj.GetType());
                 var asset = assetFactory.Generate(u_obj.GetType(), LocateName(u_obj.name), this);
@@ -732,111 +883,6 @@ namespace DLTD.Utility.AssetManagement
                 Assets[Locate(UnityObjects[i].name)] = asset;
             }
 
-        }
-
-        protected override void GenerateAssetList()
-        {
-            StartCoroutine(AllAssetLoaderAsync());
-        }
-
-        public override Asset GetAsset(string name)
-        {
-            var nameAsKey = Locate(name);
-            return GetAsset(nameAsKey);
-        }
-
-        public override Asset GetAsset(PathContainer name)
-        {
-            Asset locatedAsset;
-
-            // In future, have this fall back to querying the GameDatabase proxy
-
-            Assets.TryGetValue(name, out locatedAsset);
-            return locatedAsset;
-        }
-
-        public override Asset[] GetAssets()
-        {
-            var results = new Asset[Assets.Count];
-            for (int i = 0; i < Assets.Count; i++)
-                results[i] = Assets.At(i);
-
-            return results;
-        }
-
-        public override Asset[] GetAssets(string[] names)
-        {
-            Asset[] locatedAssets = new Asset[names.Length];
-            int locatedCount = 0;
-
-            for (int i = 0; i < names.Length; i++)
-            {
-                Asset thisLocatedAsset;
-                if (Assets.TryGetValue(Locate(names[i]), out thisLocatedAsset))
-                        locatedAssets[locatedCount++] = thisLocatedAsset;
-            }
-            return locatedAssets;
-        }
-
-        public override Asset[] GetAssets(PathContainer[] names)
-        {
-            return GetAssets(Array.ConvertAll( names, item =>(string)item ));
-        }
-
-
-        /// <summary>
-        /// The return type is not bounded by number of located assets - check for null
-        /// </summary>
-        /// <typeparam name="T"></typeparam>
-        /// <returns></returns>
-        public override Asset[] GetAssetsOfType<T>()
-        {
-            Asset[] locatedAssets = new T[Assets.Count];
-            int locatedCount = 0;
-
-            for(int i = 0; i < Assets.Count; i++ )
-            {
-                var curAsset = Assets.At(i);
-                if (curAsset.GetType() == typeof(T))
-                    locatedAssets[locatedCount++] = curAsset;
-            }
-
-            return locatedAssets;
-
-        }
-
-        public override Asset[] GetAssetsOfType<T>(string pathFilter)
-        {
-            Asset[] locatedAssets = new T[Assets.Count];
-            int locatedCount = 0;
-
-            for (int i = 0; i < Assets.Count; i++)
-            {
-                var curAsset = Assets.At(i);
-                if ((curAsset.GetType() == typeof(T)) && pathFilter.Equals(curAsset.Path.Substring(0, pathFilter.Length ), StringComparison.OrdinalIgnoreCase))
-                    locatedAssets[locatedCount++] = curAsset;
-            }
-
-            return locatedAssets;
-        }
-
-        /// <summary>
-        /// The return type is not bounded by number of located assets - check for null
-        /// </summary>
-        /// <typeparam name="T"></typeparam>
-        /// <returns></returns>
-        public override Asset[] GetAssetsOfUnityType<T>()
-        {
-            Asset[] locatedAssets = new Asset[Assets.Count];
-            int locatedCount = 0;
-
-            for (int i = 0; i < Assets.Count; i++)
-            {
-                var curAsset = Assets.At(i);
-                if (curAsset.Type == typeof(T))
-                    locatedAssets[locatedCount++] = curAsset;
-            }
-            return locatedAssets;
         }
 
         internal override UnityEngine.Object LoadObject(string name)
@@ -850,14 +896,23 @@ namespace DLTD.Utility.AssetManagement
                 DLTDLog.Log("LoadObject dump asset names: " + names[i]);
 
             DLTDLog.Log("LoadObject loading " + name);
-            var result =  bundle.LoadAsset(name);
-            DLTDLog.Log("LoadObject attempted load " + name + " [" + result?.ToString()+"]");
+            var result = bundle.LoadAsset(name);
+            DLTDLog.Log("LoadObject attempted load " + name + " [" + result?.ToString() + "]");
             return result;
         }
 
         internal override UnityEngine.Object LoadObject(PathContainer name)
         {
             return LoadObject((string)name);
+        }
+
+        // this should
+        // * scan bundle & get names
+        // * load any bundle desc files and do something with them
+        // * generate asset objects
+        protected override void GenerateAssetList()
+        {
+            StartCoroutine(AllAssetLoaderAsync());
         }
     }
     #endregion
